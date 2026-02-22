@@ -17,10 +17,28 @@ export type AgentRunContext = {
   isHeartbeat?: boolean;
 };
 
+// Use globalThis-backed shared state so that all copies of this module
+// (e.g. compiled dist/ vs jiti-loaded src/) share the same singleton data.
+const GLOBAL_KEY = Symbol.for("openclaw.agent-events.v1");
+
+interface AgentEventsSharedState {
+  seqByRun: Map<string, number>;
+  listeners: Set<(evt: AgentEventPayload) => void>;
+  runContextById: Map<string, AgentRunContext>;
+}
+
+const shared: AgentEventsSharedState = ((
+  globalThis as unknown as Record<string, AgentEventsSharedState>
+)[GLOBAL_KEY] ??= {
+  seqByRun: new Map<string, number>(),
+  listeners: new Set<(evt: AgentEventPayload) => void>(),
+  runContextById: new Map<string, AgentRunContext>(),
+});
+
 // Keep per-run counters so streams stay strictly monotonic per runId.
-const seqByRun = new Map<string, number>();
-const listeners = new Set<(evt: AgentEventPayload) => void>();
-const runContextById = new Map<string, AgentRunContext>();
+const seqByRun = shared.seqByRun;
+const listeners = shared.listeners;
+const runContextById = shared.runContextById;
 
 export function registerAgentRunContext(runId: string, context: AgentRunContext) {
   if (!runId) {

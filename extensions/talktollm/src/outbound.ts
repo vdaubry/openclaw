@@ -10,6 +10,7 @@ import {
 } from "../../../src/infra/push-apns.js";
 import { isDeviceConnected } from "./gateway.js";
 import { getTalktollmRuntime } from "./runtime.js";
+import { getSessionsForDevice } from "./session-registry.js";
 import { getConnectedClient } from "./ws-server.js";
 
 /**
@@ -39,9 +40,10 @@ export const talktollmOutboundAdapter: ChannelOutboundAdapter = {
     const runtime = getTalktollmRuntime();
     const logger = runtime.logging.getChildLogger({ channel: "talktollm" });
 
-    // Session key for the push payload — used by the iOS app to route
-    // the message to the correct conversation.
-    const sessionKey = deviceId;
+    // Resolve session key from the registry; fall back to deviceId
+    // when the registry has no mapping (e.g. device never sent a message).
+    const sessions = getSessionsForDevice(deviceId);
+    const sessionKey = sessions.length > 0 ? sessions[0]! : deviceId;
 
     // Try plugin WebSocket delivery first
     const wsClient = getConnectedClient(deviceId);
@@ -49,10 +51,16 @@ export const talktollmOutboundAdapter: ChannelOutboundAdapter = {
       wsClient.send(
         JSON.stringify({
           type: "agentText",
-          sessionKey: deviceId,
+          sessionKey,
           text,
           messageId,
-          final: true,
+        }),
+      );
+      wsClient.send(
+        JSON.stringify({
+          type: "agentDone",
+          sessionKey,
+          messageId,
         }),
       );
       logger.info(`[talktollm] WS delivered messageId=${messageId} device=${deviceId}`);
@@ -121,10 +129,7 @@ export const talktollmOutboundAdapter: ChannelOutboundAdapter = {
       };
     }
 
-    // Truncate body for push notification display (APNs has payload size limits)
-    const truncatedBody = text.length > 200 ? text.slice(0, 197) + "..." : text;
-
-    // Truncate text for the custom payload to stay within APNs 4 KB limit
+    // Truncate text for the APNs body to stay within 4 KB payload limit
     const payloadText =
       text.length > MAX_PAYLOAD_TEXT_LENGTH ? text.slice(0, MAX_PAYLOAD_TEXT_LENGTH) : text;
 
@@ -132,15 +137,9 @@ export const talktollmOutboundAdapter: ChannelOutboundAdapter = {
       const result = await sendApnsAlert({
         auth: authResult.value,
         registration,
-        nodeId: deviceId,
+        nodeId: `talktollm|${sessionKey}|${messageId}`,
         title: "New message",
-        body: truncatedBody,
-        customOpenclawData: {
-          kind: "talktollm.message",
-          messageId,
-          sessionKey,
-          text: payloadText,
-        },
+        body: payloadText,
       });
 
       if (result.ok) {

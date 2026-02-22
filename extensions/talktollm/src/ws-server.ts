@@ -1,6 +1,7 @@
 import { createServer, type Server as HttpServer } from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
 import { getTalktollmRuntime } from "./runtime.js";
+import { unregisterDevice } from "./session-registry.js";
 import { handleWsMessage } from "./ws-handler.js";
 
 const DEFAULT_WS_PORT = 18790;
@@ -33,6 +34,9 @@ function resolveGatewayToken(): string | undefined {
 }
 
 export function startWsServer(): void {
+  // Guard against double-start: if the server is already running, skip.
+  if (httpServer) return;
+
   const port = resolvePort();
   const logger = getTalktollmRuntime().logging.getChildLogger({ channel: "talktollm-ws" });
 
@@ -130,6 +134,7 @@ export function startWsServer(): void {
           clients.delete(deviceId);
           logger.info(`[talktollm-ws] client disconnected deviceId=${deviceId}`);
         }
+        unregisterDevice(deviceId);
       }
     });
 
@@ -138,6 +143,9 @@ export function startWsServer(): void {
       logger.warn(`[talktollm-ws] WebSocket error: ${err.message}`);
       if (deviceId && clients.get(deviceId) === ws) {
         clients.delete(deviceId);
+      }
+      if (deviceId) {
+        unregisterDevice(deviceId);
       }
     });
 
@@ -178,6 +186,10 @@ export function stopWsServer(): void {
   if (tickTimer) {
     clearInterval(tickTimer);
     tickTimer = null;
+  }
+  // Unregister all devices from session registry before clearing
+  for (const deviceId of clients.keys()) {
+    unregisterDevice(deviceId);
   }
   if (wss) {
     for (const client of wss.clients) {

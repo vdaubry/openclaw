@@ -39,6 +39,18 @@ vi.mock("../../../src/gateway/server-methods/agent-timestamp.js", () => ({
   timestampOptsFromConfig: vi.fn().mockReturnValue({}),
 }));
 
+const mockRegisterDeviceSession = vi.fn();
+vi.mock("./session-registry.js", () => ({
+  registerDeviceSession: (...args: unknown[]) => mockRegisterDeviceSession(...args),
+}));
+
+const mockMarkDispatchActive = vi.fn();
+const mockMarkDispatchComplete = vi.fn();
+vi.mock("./event-listener.js", () => ({
+  markDispatchActive: (...args: unknown[]) => mockMarkDispatchActive(...args),
+  markDispatchComplete: (...args: unknown[]) => mockMarkDispatchComplete(...args),
+}));
+
 import { WebSocket } from "ws";
 import { dispatchInboundMessage } from "../../../src/auto-reply/dispatch.js";
 import { handleWsMessage } from "./ws-handler.js";
@@ -321,5 +333,122 @@ describe("handleWsMessage", () => {
     expect(errorMessages).toHaveLength(0);
 
     expect(dispatchInboundMessage).toHaveBeenCalled();
+  });
+
+  it("sends typing: false before agentDone after successful dispatch", async () => {
+    const ws = createMockWs();
+
+    handleWsMessage(
+      ws,
+      "device-1",
+      JSON.stringify({
+        type: "message",
+        sessionKey: "agent:main:test",
+        text: "Hello",
+        idempotencyKey: `typing-false-${Date.now()}`,
+      }),
+    );
+
+    // Wait for the dispatch promise to resolve
+    await vi.waitFor(() => {
+      const typingFalse = ws.sentMessages.find(
+        (m: unknown) =>
+          (m as Record<string, unknown>).type === "typing" &&
+          (m as Record<string, unknown>).isTyping === false,
+      );
+      expect(typingFalse).toBeDefined();
+    });
+
+    // Find indices to verify order
+    const typingFalseIdx = ws.sentMessages.findIndex(
+      (m: unknown) =>
+        (m as Record<string, unknown>).type === "typing" &&
+        (m as Record<string, unknown>).isTyping === false,
+    );
+    const agentDoneIdx = ws.sentMessages.findIndex(
+      (m: unknown) => (m as Record<string, unknown>).type === "agentDone",
+    );
+
+    expect(typingFalseIdx).toBeGreaterThan(-1);
+    expect(agentDoneIdx).toBeGreaterThan(-1);
+    expect(typingFalseIdx).toBeLessThan(agentDoneIdx);
+  });
+
+  it("sends typing: false before agentDone after failed dispatch", async () => {
+    vi.mocked(dispatchInboundMessage).mockRejectedValueOnce(new Error("test failure"));
+
+    const ws = createMockWs();
+
+    handleWsMessage(
+      ws,
+      "device-1",
+      JSON.stringify({
+        type: "message",
+        sessionKey: "agent:main:test",
+        text: "Hello",
+        idempotencyKey: `typing-false-err-${Date.now()}`,
+      }),
+    );
+
+    // Wait for the dispatch promise to reject
+    await vi.waitFor(() => {
+      const agentDone = ws.sentMessages.find(
+        (m: unknown) => (m as Record<string, unknown>).type === "agentDone",
+      );
+      expect(agentDone).toBeDefined();
+    });
+
+    const typingFalseIdx = ws.sentMessages.findIndex(
+      (m: unknown) =>
+        (m as Record<string, unknown>).type === "typing" &&
+        (m as Record<string, unknown>).isTyping === false,
+    );
+    const agentDoneIdx = ws.sentMessages.findIndex(
+      (m: unknown) => (m as Record<string, unknown>).type === "agentDone",
+    );
+
+    expect(typingFalseIdx).toBeGreaterThan(-1);
+    expect(typingFalseIdx).toBeLessThan(agentDoneIdx);
+  });
+
+  it("calls registerDeviceSession with correct deviceId and sessionKey", () => {
+    const ws = createMockWs();
+
+    handleWsMessage(
+      ws,
+      "device-42",
+      JSON.stringify({
+        type: "message",
+        sessionKey: "agent:main:conv1",
+        text: "Hello",
+        idempotencyKey: `reg-${Date.now()}`,
+      }),
+    );
+
+    expect(mockRegisterDeviceSession).toHaveBeenCalledWith("device-42", "agent:main:conv1");
+  });
+
+  it("calls markDispatchActive before dispatch and markDispatchComplete after", async () => {
+    const ws = createMockWs();
+    const key = `dispatch-track-${Date.now()}`;
+
+    handleWsMessage(
+      ws,
+      "device-1",
+      JSON.stringify({
+        type: "message",
+        sessionKey: "agent:main:test",
+        text: "Hello",
+        idempotencyKey: key,
+      }),
+    );
+
+    // markDispatchActive should be called synchronously
+    expect(mockMarkDispatchActive).toHaveBeenCalledWith(key);
+
+    // Wait for dispatch to complete
+    await vi.waitFor(() => {
+      expect(mockMarkDispatchComplete).toHaveBeenCalledWith(key);
+    });
   });
 });

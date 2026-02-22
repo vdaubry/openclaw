@@ -9,7 +9,10 @@ import {
   injectTimestamp,
   timestampOptsFromConfig,
 } from "../../../src/gateway/server-methods/agent-timestamp.js";
+import { registerApnsToken } from "../../../src/infra/push-apns.js";
+import { markDispatchActive, markDispatchComplete } from "./event-listener.js";
 import { getTalktollmRuntime } from "./runtime.js";
+import { registerDeviceSession } from "./session-registry.js";
 
 const SESSION_KEY_RE = /^agent:[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+$/;
 
@@ -37,12 +40,7 @@ function sendFrame(ws: WebSocket, frame: Record<string, unknown>): void {
 export function handleWsMessage(ws: WebSocket, deviceId: string, raw: string): void {
   const logger = getTalktollmRuntime().logging.getChildLogger({ channel: "talktollm-ws" });
 
-  let parsed: {
-    type?: string;
-    sessionKey?: string;
-    text?: string;
-    idempotencyKey?: string;
-  };
+  let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(raw);
   } catch {
@@ -56,6 +54,27 @@ export function handleWsMessage(ws: WebSocket, deviceId: string, raw: string): v
     return;
   }
 
+  // Handle push token registration
+  if (parsed.type === "push.register") {
+    const token = typeof parsed.token === "string" ? parsed.token : "";
+    const topic = typeof parsed.topic === "string" ? parsed.topic : "";
+    if (!token || !topic) {
+      sendFrame(ws, { type: "error", message: "push.register requires token and topic" });
+      return;
+    }
+    const environment = typeof parsed.environment === "string" ? parsed.environment : undefined;
+    registerApnsToken({ nodeId: deviceId, token, topic, environment })
+      .then(() => {
+        logger.info(`APNs token registered for deviceId=${deviceId}`);
+        sendFrame(ws, { type: "push.registered" });
+      })
+      .catch((err) => {
+        logger.error(`Failed to register APNs token: ${err}`);
+        sendFrame(ws, { type: "error", message: `push.register failed: ${err}` });
+      });
+    return;
+  }
+
   // Only handle "message" type from here
   if (parsed.type !== "message") {
     sendFrame(ws, { type: "error", message: `unknown message type: ${parsed.type}` });
@@ -63,11 +82,12 @@ export function handleWsMessage(ws: WebSocket, deviceId: string, raw: string): v
   }
 
   // Validate sessionKey
-  if (!parsed.sessionKey || typeof parsed.sessionKey !== "string") {
+  const rawSessionKey = parsed.sessionKey;
+  if (!rawSessionKey || typeof rawSessionKey !== "string") {
     sendFrame(ws, { type: "error", message: "sessionKey is required" });
     return;
   }
-  const sessionKey = parsed.sessionKey.trim();
+  const sessionKey = rawSessionKey.trim();
   if (!SESSION_KEY_RE.test(sessionKey)) {
     sendFrame(ws, {
       type: "error",
@@ -77,19 +97,21 @@ export function handleWsMessage(ws: WebSocket, deviceId: string, raw: string): v
   }
 
   // Validate text
-  if (!parsed.text || typeof parsed.text !== "string" || !parsed.text.trim()) {
+  const rawText = parsed.text;
+  if (!rawText || typeof rawText !== "string" || !rawText.trim()) {
     sendFrame(ws, { type: "error", message: "text is required" });
     return;
   }
-  const text = parsed.text.trim();
+  const text = rawText.trim();
 
+  const rawIdempotencyKey = parsed.idempotencyKey;
   const idempotencyKey =
-    typeof parsed.idempotencyKey === "string" && parsed.idempotencyKey.trim()
-      ? parsed.idempotencyKey.trim()
+    typeof rawIdempotencyKey === "string" && rawIdempotencyKey.trim()
+      ? rawIdempotencyKey.trim()
       : crypto.randomUUID();
 
   // Idempotency check
-  if (typeof parsed.idempotencyKey === "string" && parsed.idempotencyKey.trim()) {
+  if (typeof rawIdempotencyKey === "string" && rawIdempotencyKey.trim()) {
     const expiresAt = recentKeys.get(idempotencyKey);
     if (expiresAt && Date.now() < expiresAt) {
       sendFrame(ws, { type: "ack", idempotencyKey, status: "duplicate" });
@@ -99,6 +121,9 @@ export function handleWsMessage(ws: WebSocket, deviceId: string, raw: string): v
 
   // Record idempotency key
   recentKeys.set(idempotencyKey, Date.now() + IDEMPOTENCY_TTL_MS);
+
+  // Track which sessions this device is using
+  registerDeviceSession(deviceId, sessionKey);
 
   // Send ack immediately
   sendFrame(ws, { type: "ack", idempotencyKey, status: "started" });
@@ -139,6 +164,7 @@ export function handleWsMessage(ws: WebSocket, deviceId: string, raw: string): v
     onError: (err) => {
       logger.warn(`[talktollm-ws] dispatch error: ${err}`);
       sendFrame(ws, { type: "error", message: String(err) });
+      sendFrame(ws, { type: "typing", sessionKey, isTyping: false });
       sendFrame(ws, { type: "agentDone", sessionKey, messageId });
     },
     deliver: async (chunk) => {
@@ -151,6 +177,9 @@ export function handleWsMessage(ws: WebSocket, deviceId: string, raw: string): v
     },
   });
 
+  // Mark this dispatch as active so the event listener skips its events
+  markDispatchActive(idempotencyKey);
+
   void dispatchInboundMessage({
     ctx,
     cfg,
@@ -158,11 +187,15 @@ export function handleWsMessage(ws: WebSocket, deviceId: string, raw: string): v
     replyOptions: { runId: idempotencyKey, onModelSelected },
   })
     .then(() => {
+      markDispatchComplete(idempotencyKey);
+      sendFrame(ws, { type: "typing", sessionKey, isTyping: false });
       sendFrame(ws, { type: "agentDone", sessionKey, messageId });
     })
     .catch((err) => {
+      markDispatchComplete(idempotencyKey);
       logger.error(`[talktollm-ws] dispatch failed: ${err}`);
       sendFrame(ws, { type: "error", message: "dispatch failed" });
+      sendFrame(ws, { type: "typing", sessionKey, isTyping: false });
       sendFrame(ws, { type: "agentDone", sessionKey, messageId });
     });
 }

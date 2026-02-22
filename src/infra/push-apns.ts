@@ -433,9 +433,6 @@ export async function sendApnsAlert(params: {
   body: string;
   timeoutMs?: number;
   requestSender?: ApnsRequestSender;
-  /** Optional custom data to merge into the `openclaw` field of the APNs payload.
-   *  When provided, these fields override the defaults (kind, nodeId, ts). */
-  customOpenclawData?: Record<string, unknown>;
 }): Promise<ApnsPushAlertResult> {
   const { token, topic, environment, bearerToken } = resolveApnsSendContext({
     auth: params.auth,
@@ -454,7 +451,6 @@ export async function sendApnsAlert(params: {
       kind: "push.test",
       nodeId: params.nodeId,
       ts: Date.now(),
-      ...params.customOpenclawData,
     },
   };
 
