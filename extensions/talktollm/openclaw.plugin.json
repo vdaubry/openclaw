@@ -1,0 +1,9 @@
+{
+  "id": "talktollm",
+  "channels": ["talktollm"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
