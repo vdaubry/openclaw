@@ -56,14 +56,6 @@ export function unregisterDevice(deviceId: string): void {
 }
 
 /**
- * Get all device IDs connected to a given session.
- */
-export function getDevicesForSession(sessionKey: string): string[] {
-  const devices = sessionToDevices.get(sessionKey);
-  return devices ? [...devices] : [];
-}
-
-/**
  * Get all session keys for a given device.
  */
 export function getSessionsForDevice(deviceId: string): string[] {

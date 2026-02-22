@@ -10,7 +10,6 @@ import {
   timestampOptsFromConfig,
 } from "../../../src/gateway/server-methods/agent-timestamp.js";
 import { registerApnsToken } from "../../../src/infra/push-apns.js";
-import { markDispatchActive, markDispatchComplete } from "./event-listener.js";
 import { getTalktollmRuntime } from "./runtime.js";
 import { registerDeviceSession } from "./session-registry.js";
 
@@ -177,9 +176,6 @@ export function handleWsMessage(ws: WebSocket, deviceId: string, raw: string): v
     },
   });
 
-  // Mark this dispatch as active so the event listener skips its events
-  markDispatchActive(idempotencyKey);
-
   void dispatchInboundMessage({
     ctx,
     cfg,
@@ -187,12 +183,10 @@ export function handleWsMessage(ws: WebSocket, deviceId: string, raw: string): v
     replyOptions: { runId: idempotencyKey, onModelSelected },
   })
     .then(() => {
-      markDispatchComplete(idempotencyKey);
       sendFrame(ws, { type: "typing", sessionKey, isTyping: false });
       sendFrame(ws, { type: "agentDone", sessionKey, messageId });
     })
     .catch((err) => {
-      markDispatchComplete(idempotencyKey);
       logger.error(`[talktollm-ws] dispatch failed: ${err}`);
       sendFrame(ws, { type: "error", message: "dispatch failed" });
       sendFrame(ws, { type: "typing", sessionKey, isTyping: false });

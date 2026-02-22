@@ -44,13 +44,6 @@ vi.mock("./session-registry.js", () => ({
   registerDeviceSession: (...args: unknown[]) => mockRegisterDeviceSession(...args),
 }));
 
-const mockMarkDispatchActive = vi.fn();
-const mockMarkDispatchComplete = vi.fn();
-vi.mock("./event-listener.js", () => ({
-  markDispatchActive: (...args: unknown[]) => mockMarkDispatchActive(...args),
-  markDispatchComplete: (...args: unknown[]) => mockMarkDispatchComplete(...args),
-}));
-
 import { WebSocket } from "ws";
 import { dispatchInboundMessage } from "../../../src/auto-reply/dispatch.js";
 import { handleWsMessage } from "./ws-handler.js";
@@ -426,29 +419,5 @@ describe("handleWsMessage", () => {
     );
 
     expect(mockRegisterDeviceSession).toHaveBeenCalledWith("device-42", "agent:main:conv1");
-  });
-
-  it("calls markDispatchActive before dispatch and markDispatchComplete after", async () => {
-    const ws = createMockWs();
-    const key = `dispatch-track-${Date.now()}`;
-
-    handleWsMessage(
-      ws,
-      "device-1",
-      JSON.stringify({
-        type: "message",
-        sessionKey: "agent:main:test",
-        text: "Hello",
-        idempotencyKey: key,
-      }),
-    );
-
-    // markDispatchActive should be called synchronously
-    expect(mockMarkDispatchActive).toHaveBeenCalledWith(key);
-
-    // Wait for dispatch to complete
-    await vi.waitFor(() => {
-      expect(mockMarkDispatchComplete).toHaveBeenCalledWith(key);
-    });
   });
 });
